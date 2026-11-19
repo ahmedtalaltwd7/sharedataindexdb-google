@@ -68,10 +68,41 @@ export function deleteRecord(id) {
 }
 
 export function replaceAllRecords(records) {
-	return transact('readwrite', (store) => {
-		store.clear();
-		for (const record of records) store.put(record);
-	});
+	return openDatabase().then(
+		(database) =>
+			new Promise((resolve, reject) => {
+				const transaction = database.transaction([STORE_NAME, SYNC_STORE_NAME], 'readwrite');
+				const recordsStore = transaction.objectStore(STORE_NAME);
+				const syncMetadata = transaction.objectStore(SYNC_STORE_NAME);
+
+				transaction.oncomplete = () => resolve();
+				transaction.onerror = () =>
+					reject(transaction.error ?? new Error('The local database transaction failed.'));
+				transaction.onabort = () =>
+					reject(transaction.error ?? new Error('The local database transaction was aborted.'));
+
+				try {
+					recordsStore.clear();
+					for (const record of records) recordsStore.put(record);
+
+					const request = syncMetadata.get(SYNC_STATE_ID);
+					request.onsuccess = () => {
+						const state = request.result ?? {
+							id: SYNC_STATE_ID,
+							revision: 0,
+							syncedRevision: 0,
+							driveSyncEnabled: false
+						};
+						state.revision += 1;
+						state.syncedRevision = state.revision;
+						syncMetadata.put(state);
+					};
+				} catch (error) {
+					transaction.abort();
+					reject(error);
+				}
+			})
+	);
 }
 
 function updateRecordAndSyncState(operation) {

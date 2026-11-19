@@ -23,4 +23,6 @@ npm run dev
 
 After setup, choose **Enable Drive sync** once and authorize Google Drive. The app creates or updates `saved-data-backup.json` using Google's browser-based OAuth flow and the `drive.file` scope, which limits access to files created or opened by this app. Contacts and deletions are saved locally first; pending changes sync when the app is online and the current Google access token is valid. Keep the app open for sync to run when connectivity returns. If Google requires sign-in again or the token expires, choose **Sync now**; pending local changes are kept until sync succeeds. A JSON download is also available without Google sign-in.
 
+The app shell is cached after the first successful visit, and contacts remain available from IndexedDB even without a network connection. Reconnect the browser and the app will request authorization as needed and upload pending local changes to Google Drive.
+
 **Restore replaces all records in this browser.** The app asks for confirmation before replacing local data. Keep another backup before restoring if you need to preserve the current records.

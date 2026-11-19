@@ -2,7 +2,6 @@
 	import { onMount } from 'svelte';
 	import {
 		backupRecordsToDrive,
-		getCachedDriveAccessToken,
 		getDriveAccessToken,
 		prepareGoogleDrive,
 		readBackupFromDrive
@@ -164,11 +163,7 @@
 			const snapshot = await getLocalSnapshot();
 			if (!snapshot.driveSyncEnabled || snapshot.revision === snapshot.syncedRevision) return;
 
-			const token = getCachedDriveAccessToken();
-			if (!token) {
-				setStatus('Local changes are waiting. Choose Sync now to reconnect Google Drive.', 'info');
-				return;
-			}
+			const token = await getDriveAccessToken(googleClientId);
 			await backupRecordsToDrive(snapshot.records, token);
 			driveSyncEnabled = true;
 			records = snapshot.records.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
@@ -238,6 +233,11 @@
 		isOnline = navigator.onLine;
 		window.addEventListener('online', updateOnlineStatus);
 		window.addEventListener('offline', updateOnlineStatus);
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/service-worker.js').catch((error) => {
+				if (active) setStatus(`Offline app setup could not complete: ${error.message}`, 'error');
+			});
+		}
 
 		getLocalSnapshot()
 			.then((snapshot) => {
