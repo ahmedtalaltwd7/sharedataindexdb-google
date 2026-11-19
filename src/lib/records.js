@@ -60,11 +60,11 @@ export function getAllRecords() {
 }
 
 export function saveRecord(record) {
-	return updateRecordAndSyncState((store) => store.put(record));
+	return updateRecordAndSyncState((store) => store.put(record), record.id);
 }
 
 export function deleteRecord(id) {
-	return updateRecordAndSyncState((store) => store.delete(id));
+	return updateRecordAndSyncState((store) => store.delete(id), id);
 }
 
 export function replaceAllRecords(records) {
@@ -95,6 +95,9 @@ export function replaceAllRecords(records) {
 						};
 						state.revision += 1;
 						state.syncedRevision = state.revision;
+						state.cloudRecordVersions = Object.fromEntries(
+							records.map((record) => [record.id, record.updatedAt])
+						);
 						syncMetadata.put(state);
 					};
 				} catch (error) {
@@ -105,7 +108,7 @@ export function replaceAllRecords(records) {
 	);
 }
 
-function updateRecordAndSyncState(operation) {
+function updateRecordAndSyncState(operation, changedRecordId) {
 	return openDatabase().then(
 		(database) =>
 			new Promise((resolve, reject) => {
@@ -129,8 +132,32 @@ function updateRecordAndSyncState(operation) {
 							syncedRevision: 0,
 							driveSyncEnabled: false
 						};
-						state.revision += 1;
-						syncMetadata.put(state);
+						const updateState = () => {
+							state.cloudRecordVersions ??= {};
+							delete state.cloudRecordVersions[changedRecordId];
+							state.revision += 1;
+							syncMetadata.put(state);
+						};
+
+						if (
+							!state.cloudRecordVersions &&
+							state.driveSyncEnabled &&
+							state.revision === state.syncedRevision
+						) {
+							const recordsRequest = records.getAll();
+							recordsRequest.onsuccess = () => {
+								state.cloudRecordVersions = Object.fromEntries(
+									recordsRequest.result
+										.filter((record) => record.id !== changedRecordId)
+										.map((record) => [record.id, record.updatedAt])
+								);
+								updateState();
+							};
+							recordsRequest.onerror = () =>
+								reject(recordsRequest.error ?? new Error('Could not read local records.'));
+						} else {
+							updateState();
+						}
 					};
 				} catch (error) {
 					transaction.abort();
@@ -161,7 +188,14 @@ export function getLocalSnapshot() {
 						records,
 						revision: state?.revision ?? 0,
 						syncedRevision: state?.syncedRevision ?? 0,
-						driveSyncEnabled: state?.driveSyncEnabled ?? false
+						driveSyncEnabled: state?.driveSyncEnabled ?? false,
+						cloudRecordIds: records
+							.filter((record) =>
+								state?.cloudRecordVersions
+									? state.cloudRecordVersions[record.id] === record.updatedAt
+									: state?.driveSyncEnabled && state.revision === state.syncedRevision
+							)
+							.map((record) => record.id)
 					});
 				transaction.onerror = () =>
 					reject(transaction.error ?? new Error('The local database transaction failed.'));
@@ -175,12 +209,19 @@ export function completeDriveSync(revision, enableDriveSync = true) {
 	return openDatabase().then(
 		(database) =>
 			new Promise((resolve, reject) => {
-				const transaction = database.transaction(SYNC_STORE_NAME, 'readwrite');
+				const transaction = database.transaction([STORE_NAME, SYNC_STORE_NAME], 'readwrite');
+				const recordsRequest = transaction.objectStore(STORE_NAME).getAll();
 				const store = transaction.objectStore(SYNC_STORE_NAME);
+				const stateRequest = store.get(SYNC_STATE_ID);
+				let records;
+				let state;
+				let recordsLoaded = false;
+				let stateLoaded = false;
 				let completed = false;
 
-				store.get(SYNC_STATE_ID).onsuccess = (event) => {
-					const state = event.target.result ?? {
+				const saveStateIfReady = () => {
+					if (!recordsLoaded || !stateLoaded) return;
+					state = state ?? {
 						id: SYNC_STATE_ID,
 						revision: 0,
 						syncedRevision: 0,
@@ -189,10 +230,28 @@ export function completeDriveSync(revision, enableDriveSync = true) {
 					state.driveSyncEnabled = state.driveSyncEnabled || enableDriveSync;
 					if (state.revision === revision) {
 						state.syncedRevision = revision;
+						state.cloudRecordVersions = Object.fromEntries(
+							records.map((record) => [record.id, record.updatedAt])
+						);
 						completed = true;
 					}
 					store.put(state);
 				};
+
+				recordsRequest.onsuccess = () => {
+					records = recordsRequest.result;
+					recordsLoaded = true;
+					saveStateIfReady();
+				};
+				stateRequest.onsuccess = () => {
+					state = stateRequest.result;
+					stateLoaded = true;
+					saveStateIfReady();
+				};
+				recordsRequest.onerror = () =>
+					reject(recordsRequest.error ?? new Error('Could not read local records after Drive sync.'));
+				stateRequest.onerror = () =>
+					reject(stateRequest.error ?? new Error('Could not read Drive sync state.'));
 				transaction.oncomplete = () => resolve(completed);
 				transaction.onerror = () =>
 					reject(transaction.error ?? new Error('The local database transaction failed.'));

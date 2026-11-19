@@ -9,7 +9,6 @@
 	import {
 		completeDriveSync,
 		deleteRecord,
-		getAllRecords,
 		getLocalSnapshot,
 		replaceAllRecords,
 		saveRecord as saveLocalRecord
@@ -18,6 +17,7 @@
 	const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '';
 
 	let records = $state([]);
+	let cloudRecordIds = $state([]);
 	let form = $state({ name: '', email: '', phone: '', company: '', notes: '' });
 	let searchTerm = $state('');
 	let editingId = $state(null);
@@ -44,8 +44,9 @@
 	}
 
 	async function refreshRecords() {
-		const savedRecords = await getAllRecords();
-		records = savedRecords.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+		const snapshot = await getLocalSnapshot();
+		records = snapshot.records.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+		cloudRecordIds = snapshot.cloudRecordIds;
 	}
 
 	function resetForm() {
@@ -138,7 +139,7 @@
 			await backupRecordsToDrive(snapshot.records, token);
 			driveSyncEnabled = true;
 			const fullySynced = await completeDriveSync(snapshot.revision);
-			records = snapshot.records.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+			await refreshRecords();
 			setStatus(
 				fullySynced
 					? `Backed up ${snapshot.records.length} ${snapshot.records.length === 1 ? 'record' : 'records'} to Google Drive. Automatic sync is enabled.`
@@ -166,8 +167,8 @@
 			const token = await getDriveAccessToken(googleClientId);
 			await backupRecordsToDrive(snapshot.records, token);
 			driveSyncEnabled = true;
-			records = snapshot.records.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 			const fullySynced = await completeDriveSync(snapshot.revision);
+			await refreshRecords();
 			setStatus(
 				fullySynced
 					? `Synced ${snapshot.records.length} ${snapshot.records.length === 1 ? 'record' : 'records'} to Google Drive.`
@@ -243,6 +244,7 @@
 			.then((snapshot) => {
 				if (!active) return;
 				records = snapshot.records.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+				cloudRecordIds = snapshot.cloudRecordIds;
 				driveSyncEnabled = snapshot.driveSyncEnabled;
 				setStatus(
 					records.length
@@ -446,6 +448,21 @@
 								<div class="record-main">
 									<div class="record-name-row">
 										<h3>{record.name}</h3>
+										<span class="record-storage-icons">
+											<span class="record-storage-icon local-storage-icon" role="img" aria-label="Stored on this device" title="Stored on this device">
+												<svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+													<rect x="3.5" y="4" width="13" height="12" rx="2" stroke="currentColor" stroke-width="1.4" />
+													<path d="M7 4V2.8h6V4M7 8h6m-6 3h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+												</svg>
+											</span>
+											{#if cloudRecordIds.includes(record.id)}
+												<span class="record-storage-icon cloud-storage-icon" role="img" aria-label="Backed up to Google Drive" title="Backed up to Google Drive">
+													<svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+														<path d="M6.3 13.8H5a3 3 0 0 1-.4-6 5.2 5.2 0 0 1 10-1.1 3.6 3.6 0 0 1 .4 7.1h-1.3M10 10v7m0-7 2.5 2.5M10 10l-2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+													</svg>
+												</span>
+											{/if}
+										</span>
 										<span class="record-date">{recordDate(record.updatedAt)}</span>
 									</div>
 									{#if record.company}<p class="record-company">{record.company}</p>{/if}
@@ -629,6 +646,11 @@
 	.record-main { flex: 1; min-width: 0; }
 	.record-name-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 	.record-name-row h3 { margin: 0; color: #373a34; font-size: 11px; font-weight: 670; }
+	.record-storage-icons { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+	.record-storage-icon { display: grid; place-items: center; width: 15px; height: 15px; }
+	.record-storage-icon svg { width: 14px; height: 14px; }
+	.local-storage-icon { color: #82927d; }
+	.cloud-storage-icon { color: #5d8a64; }
 	.record-date { color: #afb1aa; font-size: 8px; white-space: nowrap; }
 	.record-company { color: #92958d; font-size: 9px; margin: 3px 0 0; }
 	.record-details { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 13px; margin-top: 8px; }
