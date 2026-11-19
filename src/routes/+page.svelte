@@ -1,5 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
+	import { createBackupArchive } from '#lib/backup';
 	import {
 		backupRecordsToDrive,
 		getDriveAccessToken,
@@ -15,19 +16,22 @@
 	} from '#lib/records';
 
 	const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? '';
+	const maxImageSize = 5 * 1024 * 1024;
 
 	let records = $state([]);
 	let cloudRecordIds = $state([]);
-	let form = $state({ name: '', email: '', phone: '', company: '', notes: '' });
+	let form = $state({ name: '', email: '', phone: '', company: '', notes: '', image: '' });
 	let searchTerm = $state('');
 	let editingId = $state(null);
 	let busy = $state(false);
+	let imageBusy = $state(false);
 	let driveBusy = $state(false);
 	let driveSyncEnabled = $state(false);
 	let isOnline = $state(true);
 	let statusMessage = $state('Loading your local records...');
 	let statusKind = $state('info');
 	let syncInProgress = false;
+	let imageInput;
 
 	const filteredRecords = $derived(
 		records.filter((record) =>
@@ -50,8 +54,58 @@
 	}
 
 	function resetForm() {
-		form = { name: '', email: '', phone: '', company: '', notes: '' };
+		form = { name: '', email: '', phone: '', company: '', notes: '', image: '' };
 		editingId = null;
+		if (imageInput) imageInput.value = '';
+	}
+
+	function readImageFile(file) {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => {
+				if (typeof reader.result !== 'string') {
+					reject(new Error('Could not read the selected image.'));
+					return;
+				}
+				resolve(reader.result);
+			};
+			reader.onerror = () =>
+				reject(reader.error ?? new Error('Could not read the selected image.'));
+			reader.onabort = () => reject(new Error('Reading the selected image was canceled.'));
+			reader.readAsDataURL(file);
+		});
+	}
+
+	async function handleImageUpload(event) {
+		const input = event.currentTarget;
+		const file = input.files?.[0];
+		if (!file) return;
+		if (!file.type.startsWith('image/')) {
+			input.value = '';
+			setStatus('Choose a valid image file.', 'error');
+			return;
+		}
+		if (file.size > maxImageSize) {
+			input.value = '';
+			setStatus('Images must be 5 MB or smaller.', 'error');
+			return;
+		}
+
+		imageBusy = true;
+		try {
+			form = { ...form, image: await readImageFile(file) };
+			setStatus('Image ready to save with this record.');
+		} catch (error) {
+			input.value = '';
+			setStatus(`Could not read this image: ${error.message}`, 'error');
+		} finally {
+			imageBusy = false;
+		}
+	}
+
+	function removeFormImage() {
+		form = { ...form, image: '' };
+		if (imageInput) imageInput.value = '';
 	}
 
 	async function handleSubmit(event) {
@@ -87,8 +141,10 @@
 			email: record.email ?? '',
 			phone: record.phone ?? '',
 			company: record.company ?? '',
-			notes: record.notes ?? ''
+			notes: record.notes ?? '',
+			image: record.image ?? ''
 		};
+		if (imageInput) imageInput.value = '';
 		window.scrollTo({ top: 0, behavior: 'smooth' });
 	}
 
@@ -107,20 +163,15 @@
 
 	function downloadBackup() {
 		try {
-			const exportData = {
-				format: 'saved-data-backup',
-				version: 1,
-				exportedAt: new Date().toISOString(),
-				records
-			};
-			const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+			const archive = createBackupArchive(records);
+			const blob = new Blob([archive], { type: 'application/zip' });
 			const url = URL.createObjectURL(blob);
 			const link = document.createElement('a');
 			link.href = url;
-			link.download = 'saved-data-backup.json';
+			link.download = 'saved-data-backup.zip';
 			link.click();
 			URL.revokeObjectURL(url);
-			setStatus('A JSON backup was downloaded to this device.', 'success');
+			setStatus('A ZIP backup with separate image files was downloaded to this device.', 'success');
 		} catch (error) {
 			setStatus(`Could not create a JSON backup: ${error.message}`, 'error');
 		}
@@ -336,6 +387,37 @@
 						<input bind:value={form.name} name="name" placeholder="e.g. Alex Morgan" autocomplete="name" required />
 					</label>
 
+					<div class="field">
+						<span id="photo-label">Photo <small>OPTIONAL</small></span>
+						<div class="image-upload-row">
+							<div class="image-preview">
+								{#if form.image}
+									<img src={form.image} alt="" />
+								{:else}
+									<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+										<circle cx="12" cy="8" r="3.5" stroke="currentColor" stroke-width="1.4" />
+										<path d="M5 20c.7-3.5 3-5.3 7-5.3s6.3 1.8 7 5.3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+									</svg>
+								{/if}
+							</div>
+							<div class="image-upload-control">
+								<input
+									bind:this={imageInput}
+									type="file"
+									name="image"
+									accept="image/*"
+									aria-labelledby="photo-label"
+									disabled={imageBusy || busy}
+									onchange={handleImageUpload}
+								/>
+								<small>Choose an image up to 5 MB.</small>
+								{#if form.image}
+									<button class="button button-quiet" type="button" onclick={removeFormImage}>Remove photo</button>
+								{/if}
+							</div>
+						</div>
+					</div>
+
 					<div class="field-pair">
 						<label class="field">
 							<span>Email</span>
@@ -358,7 +440,7 @@
 					</label>
 
 					<div class="form-actions">
-						<button class="button button-primary" type="submit" disabled={busy}>
+						<button class="button button-primary" type="submit" disabled={busy || imageBusy}>
 							{editingId ? 'Save changes' : 'Save contact'}
 							<svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
 								<path d="M4 10h12m-5-5 5 5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
@@ -420,7 +502,7 @@
 									: 'Works offline; configure Google Drive to enable automatic sync'}
 						</span>
 					</span>
-					<button class="text-button" type="button" onclick={downloadBackup} disabled={!records.length}>Download JSON</button>
+					<button class="text-button" type="button" onclick={downloadBackup} disabled={!records.length}>Download ZIP</button>
 				</div>
 
 				{#if !googleClientId}
@@ -444,7 +526,13 @@
 					<div class="record-list">
 						{#each filteredRecords as record (record.id)}
 							<article class="record-card">
-								<div class="avatar" aria-hidden="true">{record.name.trim().charAt(0).toUpperCase()}</div>
+								<div class="avatar" aria-hidden="true">
+									{#if record.image}
+										<img src={record.image} alt="" />
+									{:else}
+										{record.name.trim().charAt(0).toUpperCase()}
+									{/if}
+								</div>
 								<div class="record-main">
 									<div class="record-name-row">
 										<h3>{record.name}</h3>
@@ -589,6 +677,16 @@
 	.field > span { font-size: 10px; font-weight: 620; color: #555950; }
 	.field > span b { color: #bb755f; font-weight: 600; }
 	.field > span small { color: #a4a69e; font-size: 8px; font-weight: 600; letter-spacing: .08em; margin-left: 5px; }
+	.image-upload-row { display: flex; align-items: center; gap: 12px; }
+	.image-preview { width: 48px; height: 48px; flex: 0 0 48px; display: grid; place-items: center; overflow: hidden; border: 1px solid #e6e8e2; border-radius: 50%; background: #f3f5f0; color: #879582; }
+	.image-preview img { width: 100%; height: 100%; object-fit: cover; }
+	.image-preview svg { width: 23px; height: 23px; }
+	.image-upload-control { display: grid; justify-items: start; gap: 5px; min-width: 0; }
+	.image-upload-control input { max-width: 100%; color: #777c72; font-size: 9px; }
+	.image-upload-control input::file-selector-button { margin-right: 7px; padding: 5px 8px; border: 1px solid #e3e6df; border-radius: 4px; background: #fafbf8; color: #596552; font: inherit; cursor: pointer; }
+	.image-upload-control input:disabled { opacity: .6; }
+	.image-upload-control > small { color: #a0a39b; font-size: 8px; }
+	.image-upload-control .button { height: 26px; font-size: 9px; }
 	.field input, .field textarea, .search-wrap input {
 		border: 1px solid #e6e7e1;
 		border-radius: 5px;
@@ -642,7 +740,8 @@
 	.clear-search { position: absolute; right: 7px; top: 50%; width: 21px; height: 21px; transform: translateY(-50%); border: 0; background: transparent; color: #858a80; font-size: 17px; line-height: 1; cursor: pointer; }
 	.record-list { display: grid; }
 	.record-card { display: flex; position: relative; align-items: flex-start; gap: 12px; padding: 15px 2px 14px; border-bottom: 1px solid #eff0ec; }
-	.avatar { flex: 0 0 34px; width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: #55725a; background: #edf2e9; font-family: Georgia, "Times New Roman", serif; font-size: 15px; }
+	.avatar { flex: 0 0 34px; width: 34px; height: 34px; display: grid; place-items: center; overflow: hidden; border-radius: 50%; color: #55725a; background: #edf2e9; font-family: Georgia, "Times New Roman", serif; font-size: 15px; }
+	.avatar img { width: 100%; height: 100%; object-fit: cover; }
 	.record-main { flex: 1; min-width: 0; }
 	.record-name-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 	.record-name-row h3 { margin: 0; color: #373a34; font-size: 11px; font-weight: 670; }

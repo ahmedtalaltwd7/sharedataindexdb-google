@@ -1,7 +1,12 @@
+import { createBackupArchive, parseBackupArchive, parseBackupDocument } from './backup.js';
+
 const GOOGLE_IDENTITY_SCRIPT = 'https://accounts.google.com/gsi/client';
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
-export const BACKUP_FILE_NAME = 'saved-data-backup.json';
+export const BACKUP_FILE_NAME = 'saved-data-backup.zip';
+const LEGACY_BACKUP_FILE_NAME = 'saved-data-backup.json';
+
+export { parseBackupDocument };
 
 let identityScriptPromise;
 let cachedAccessToken;
@@ -103,9 +108,9 @@ async function driveRequest(url, token, options = {}) {
 	return response;
 }
 
-async function findBackupFile(token) {
+async function findBackupFile(token, name) {
 	const query = new URLSearchParams({
-		q: `name = '${BACKUP_FILE_NAME}' and trashed = false`,
+		q: `name = '${name}' and trashed = false`,
 		pageSize: '1',
 		orderBy: 'modifiedTime desc',
 		fields: 'files(id,name,modifiedTime)'
@@ -124,59 +129,38 @@ export function createBackupDocument(records) {
 	};
 }
 
-export function parseBackupDocument(value) {
-	if (
-		!value ||
-		value.format !== 'saved-data-backup' ||
-		value.version !== 1 ||
-		!Array.isArray(value.records)
-	) {
-		throw new Error('This file is not a supported saved-data backup.');
-	}
-
-	const ids = new Set();
-	for (const record of value.records) {
-		if (!record || typeof record !== 'object' || Array.isArray(record)) {
-			throw new Error('The backup contains an invalid record.');
-		}
-		if (typeof record.id !== 'string' || !record.id || typeof record.name !== 'string' || !record.name.trim()) {
-			throw new Error('The backup contains a record without a valid ID or name.');
-		}
-		if (ids.has(record.id)) throw new Error('The backup contains duplicate record IDs.');
-		ids.add(record.id);
-	}
-
-	return value.records;
-}
-
 export async function backupRecordsToDrive(records, token) {
-	const document = createBackupDocument(records);
-	const existingFile = await findBackupFile(token);
-	const json = JSON.stringify(document, null, 2);
+	const archive = createBackupArchive(records);
+	const media = new Blob([archive], { type: 'application/zip' });
+	const existingFile = await findBackupFile(token, BACKUP_FILE_NAME);
 
 	if (existingFile) {
-		const response = await driveRequest(`${UPLOAD_API}/files/${encodeURIComponent(existingFile.id)}?uploadType=media`, token, {
-			method: 'PATCH',
-			headers: { 'Content-Type': 'application/json' },
-			body: json
-		});
+		const response = await driveRequest(
+			`${UPLOAD_API}/files/${encodeURIComponent(existingFile.id)}?uploadType=media`,
+			token,
+			{
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/zip' },
+				body: media
+			}
+		);
 		return response.json();
 	}
 
 	const boundary = `saved_data_${crypto.randomUUID().replaceAll('-', '')}`;
-	const metadata = JSON.stringify({ name: BACKUP_FILE_NAME, mimeType: 'application/json' });
-	const body = [
-		`--${boundary}`,
-		'Content-Type: application/json; charset=UTF-8',
-		'',
-		metadata,
-		`--${boundary}`,
-		'Content-Type: application/json; charset=UTF-8',
-		'',
-		json,
-		`--${boundary}--`,
-		''
-	].join('\r\n');
+	const metadata = JSON.stringify({ name: BACKUP_FILE_NAME, mimeType: 'application/zip' });
+	const body = new Blob(
+		[
+			`--${boundary}\r\n`,
+			'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+			metadata,
+			`\r\n--${boundary}\r\n`,
+			'Content-Type: application/zip\r\n\r\n',
+			media,
+			`\r\n--${boundary}--\r\n`
+		],
+		{ type: `multipart/related; boundary=${boundary}` }
+	);
 	const response = await driveRequest(`${UPLOAD_API}/files?uploadType=multipart`, token, {
 		method: 'POST',
 		headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
@@ -186,10 +170,18 @@ export async function backupRecordsToDrive(records, token) {
 }
 
 export async function readBackupFromDrive(token) {
-	const file = await findBackupFile(token);
-	if (!file) throw new Error(`No ${BACKUP_FILE_NAME} file was found in Google Drive.`);
+	const file =
+		(await findBackupFile(token, BACKUP_FILE_NAME)) ??
+		(await findBackupFile(token, LEGACY_BACKUP_FILE_NAME));
+	if (!file) {
+		throw new Error(`No ${BACKUP_FILE_NAME} or legacy ${LEGACY_BACKUP_FILE_NAME} file was found in Google Drive.`);
+	}
 
 	const response = await driveRequest(`${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media`, token);
+	if (file.name === BACKUP_FILE_NAME) {
+		return parseBackupArchive(new Uint8Array(await response.arrayBuffer()));
+	}
+
 	let document;
 	try {
 		document = await response.json();

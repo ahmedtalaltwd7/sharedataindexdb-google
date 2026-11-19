@@ -1,6 +1,6 @@
 # Fieldnotes
 
-A local-first SvelteKit address book. Contacts are stored in the browser's IndexedDB database (`local-first-records`, object store `savedData`) and remain available offline. Google Drive is optional and no application backend is involved.
+A local-first SvelteKit address book. Contacts and optional photos (up to 5 MB each) are stored in the browser's IndexedDB database (`local-first-records`, object store `savedData`) and remain available offline. Downloaded and Google Drive backups are ZIP files containing a JSON manifest and separate image files. Google Drive is optional and no application backend is involved.
 
 ## Run locally
 
@@ -21,7 +21,7 @@ npm run dev
 
 4. Restart the dev server. On a deployed app, configure the same variable in the hosting provider and add its origin to the OAuth client.
 
-After setup, choose **Enable Drive sync** once and authorize Google Drive. The app creates or updates `saved-data-backup.json` using Google's browser-based OAuth flow and the `drive.file` scope, which limits access to files created or opened by this app. Contacts and deletions are saved locally first; pending changes sync when the app is online and the current Google access token is valid. Keep the app open for sync to run when connectivity returns. If Google requires sign-in again or the token expires, choose **Sync now**; pending local changes are kept until sync succeeds. A JSON download is also available without Google sign-in.
+After setup, choose **Enable Drive sync** once and authorize Google Drive. The app creates or updates `saved-data-backup.zip` using Google's browser-based OAuth flow and the `drive.file` scope, which limits access to files created or opened by this app. The ZIP contains the JSON manifest and separate image files. Contacts and deletions are saved locally first; pending changes sync when the app is online and the current Google access token is valid. Keep the app open for sync to run when connectivity returns. If Google requires sign-in again or the token expires, choose **Sync now**; pending local changes are kept until sync succeeds. A ZIP download is also available without Google sign-in. Existing JSON backups in Google Drive remain available to restore.
 
 The app shell is cached after the first successful visit, and contacts remain available from IndexedDB even without a network connection. Reconnect the browser and the app will request authorization as needed and upload pending local changes to Google Drive.
 

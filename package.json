@@ -11,7 +11,11 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"preview": "vite preview",
+		"test": "node --test",
 		"prepare": "svelte-kit sync || echo ''"
+	},
+	"dependencies": {
+		"fflate": "^0.8.2"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^8.0.0",
